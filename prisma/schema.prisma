@@ -1,0 +1,301 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Enums
+enum UserRole {
+  END_USER
+  RESELLER_ADMIN
+  SUPER_ADMIN
+}
+
+enum LicenseStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum OrderStatus {
+  PENDING
+  COMPLETED
+  CANCELLED
+  REFUNDED
+}
+
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+}
+
+enum TicketPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum ServiceType {
+  IMEI
+  FILE
+  SERVER
+}
+
+// Multi-tenant Reseller Model (Our Customers - The Businesses)
+model Reseller {
+  id              String   @id @default(cuid())
+  companyName     String
+  customLogoUrl   String?
+  customDomain    String?  @unique
+  email           String   @unique
+  phone           String?
+  address         String?
+  isActive        Boolean  @default(true)
+  isFeatured      Boolean  @default(false) // Show on public marketing page
+  
+  // Webex Connect API Configuration
+  webexApiKey     String?  // Webex Connect API Key
+  webexSenderId   String?  // Sender ID for SMS
+  smsEnabled      Boolean  @default(false) // Enable SMS notifications
+  smsBalance      Float    @default(0) // SMS credit balance
+  smsCostPerMsg   Float    @default(0.05) // Cost per SMS message
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  // Relations
+  users           User[]
+  orders          Order[]
+  transactions    Transaction[]
+  supportTickets  SupportTicket[]
+  licenses        License[]
+  suppliers       Supplier[]
+  managedServices ManagedService[]
+  cmsPages        CMSPage[]
+
+  @@map("resellers")
+}
+
+// User Model with Multi-tenant Support
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  name          String?
+  password      String
+  role          UserRole  @default(END_USER)
+  image         String?
+  emailVerified DateTime?
+  balance       Float     @default(0) // User's credit balance
+  phone         String?   // Phone number for SMS notifications
+  smsEnabled    Boolean   @default(true) // Receive SMS notifications
+  isActive      Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // Multi-tenant Foreign Key
+  resellerId    String
+  reseller      Reseller  @relation(fields: [resellerId], references: [id], onDelete: Cascade)
+
+  // Relations
+  orders        Order[]
+  supportTickets SupportTicket[]
+
+  @@index([resellerId])
+  @@index([email])
+  @@map("users")
+}
+
+// License Model for Developer Panel (Part 4)
+model License {
+  id          String        @id @default(cuid())
+  key         String        @unique
+  status      LicenseStatus @default(ACTIVE)
+  expiresAt   DateTime?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  // Multi-tenant Foreign Key
+  resellerId  String
+  reseller    Reseller      @relation(fields: [resellerId], references: [id], onDelete: Cascade)
+
+  @@index([resellerId])
+  @@index([key])
+  @@map("licenses")
+}
+
+// Order Model
+model Order {
+  id            String      @id @default(cuid())
+  orderNumber   String      @unique
+  status        OrderStatus @default(PENDING)
+  totalAmount   Float
+  currency      String      @default("USD")
+  items         Json        // Store order items as JSON
+  notes         String?
+  
+  // DHRU Integration Fields
+  supplierOrderId String?   // Order ID from DHRU API
+  supplierResponse Json?    // Full response from DHRU
+  supplierStatus  String?   // Status from DHRU (e.g., "Success", "Pending", "Rejected")
+  code            String?   // Unlock code or result from DHRU
+  
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  // Multi-tenant Foreign Key
+  resellerId    String
+  reseller      Reseller    @relation(fields: [resellerId], references: [id], onDelete: Cascade)
+
+  // User relation
+  userId        String
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Relations
+  transactions  Transaction[]
+
+  @@index([resellerId])
+  @@index([userId])
+  @@index([orderNumber])
+  @@map("orders")
+}
+
+// Transaction Model
+model Transaction {
+  id              String   @id @default(cuid())
+  amount          Float
+  currency        String   @default("USD")
+  stripePaymentId String?  @unique
+  status          String   // paid, pending, failed, refunded
+  paymentMethod   String?
+  metadata        Json?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  // Multi-tenant Foreign Key
+  resellerId      String
+  reseller        Reseller @relation(fields: [resellerId], references: [id], onDelete: Cascade)
+
+  // Order relation
+  orderId         String
+  order           Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([resellerId])
+  @@index([orderId])
+  @@index([stripePaymentId])
+  @@map("transactions")
+}
+
+// Support Ticket Model
+model SupportTicket {
+  id          String         @id @default(cuid())
+  subject     String
+  description String
+  status      TicketStatus   @default(OPEN)
+  priority    TicketPriority @default(MEDIUM)
+  response    String?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  resolvedAt  DateTime?
+
+  // Multi-tenant Foreign Key
+  resellerId  String
+  reseller    Reseller       @relation(fields: [resellerId], references: [id], onDelete: Cascade)
+
+  // User relation
+  userId      String
+  user        User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([resellerId])
+  @@index([userId])
+  @@index([status])
+  @@map("support_tickets")
+}
+
+// Supplier Model - DHRU API Providers
+model Supplier {
+  id              String   @id @default(cuid())
+  name            String
+  apiUrl          String
+  username        String
+  apiKey          String   // Encrypted in production
+  isActive        Boolean  @default(true)
+  priority        Int      @default(0) // For routing preference
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  // Multi-tenant Foreign Key
+  resellerId      String
+  reseller        Reseller @relation(fields: [resellerId], references: [id], onDelete: Cascade)
+
+  // Relations
+  managedServices ManagedService[]
+
+  @@index([resellerId])
+  @@index([isActive])
+  @@map("suppliers")
+}
+
+// Managed Service Model - Services from DHRU with custom pricing
+model ManagedService {
+  id                  String      @id @default(cuid())
+  supplierServiceId   String      // ID from DHRU API
+  name                String
+  description         String?
+  category            String?
+  serviceType         ServiceType @default(IMEI) // IMEI, FILE, or SERVER
+  supplierPrice       Float       // Original price from supplier
+  ourPrice            Float       // Reseller's selling price (their margin)
+  isEnabled           Boolean     @default(true)
+  minQuantity         Int         @default(1)
+  maxQuantity         Int         @default(1)
+  deliveryTime        String?     // Estimated delivery time
+  metadata            Json?       // Additional service details from API
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @updatedAt
+
+  // Multi-tenant Foreign Key
+  resellerId          String
+  reseller            Reseller @relation(fields: [resellerId], references: [id], onDelete: Cascade)
+
+  // Supplier relation
+  supplierId          String
+  supplier            Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+
+  @@unique([resellerId, supplierServiceId, supplierId])
+  @@index([resellerId])
+  @@index([supplierId])
+  @@index([isEnabled])
+  @@index([category])
+  @@map("managed_services")
+}
+
+// CMS Page Model - For managing public content pages
+model CMSPage {
+  id          String   @id @default(cuid())
+  slug        String   // about-us, terms-of-service, privacy-policy, etc.
+  title       String
+  content     String   @db.Text // Rich text content
+  isPublished Boolean  @default(false)
+  metaTitle   String?
+  metaDescription String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Multi-tenant Foreign Key
+  resellerId  String
+  reseller    Reseller @relation(fields: [resellerId], references: [id], onDelete: Cascade)
+
+  @@unique([resellerId, slug])
+  @@index([resellerId])
+  @@index([slug])
+  @@index([isPublished])
+  @@map("cms_pages")
+}
